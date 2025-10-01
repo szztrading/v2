@@ -14,3 +14,13 @@ def to_excel_zip(dfs: dict[str, pd.DataFrame]) -> io.BytesIO:
 
 def to_csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode("utf-8")
+def to_csv_bytes_many(named_dfs: dict[str, pd.DataFrame]) -> io.BytesIO:
+    buf = io.BytesIO()
+    import zipfile
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for fname, df in named_dfs.items():
+            if not fname.endswith(".csv"):
+                fname = fname + ".csv"
+            zf.writestr(fname, df.to_csv(index=False).encode("utf-8"))
+    buf.seek(0)
+    return buf
