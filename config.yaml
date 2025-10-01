@@ -1,0 +1,34 @@
+marketplace: "amazon.co.uk"
+target_acos: 0.30
+
+bid_steps:
+  up_pct: 0.15
+  down_pct: 0.10
+
+thresholds:
+  min_clicks: 20
+  min_conversions: 2
+  harvest_cvr: 0.10
+
+negatives_scan:
+  include_terms: ["brew","brewing","airlock","ferment","demijohn","bung","grommet","wine","cider","mead","kombucha","heat belt","heat mat","heat pad","fermentation"]
+  exclude_terms: ["reptile","terrarium","seed","seedling","plant","pet","dog","cat","car","12v","water tank","aquarium","vivarium","sous vide","coffee","tea pot"]
+  price_min: 10
+  price_max: 60
+  rating_min: 3.8
+  reviews_min: 20
+  brand_whitelist: []
+  brand_blacklist: []
+
+keepa:
+  domain_map:
+    amazon.co.uk: 2
+    amazon.com: 1
+    amazon.de: 3
+    amazon.fr: 8
+    amazon.it: 10
+    amazon.es: 9
+  prefer_rest: true
+  history: 0
+  timeout: 25
+  retries: 2
