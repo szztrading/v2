@@ -23,3 +23,18 @@ def enrich_product_info(asins: list[str], domain_name: str) -> pd.DataFrame:
             "url": f"https://{domain_name}/dp/{a}"
         })
     return pd.DataFrame(rows)
+    
+def scrape_listing_text(asins: list[str], domain_name: str) -> dict:
+    """
+    返回 {asin: {"title": str, "bullets": str, "aplus": str, "brand": str}}
+    你可以复用你 v1 的移动页 /gp/aw/d/<ASIN> / 一些 JSON 数据块解析。这里先给占位。
+    """
+    out = {}
+    for a in asins:
+        out[a] = {
+            "title": "",   # TODO: 替换为真实抓取
+            "bullets": "", # TODO
+            "aplus": "",   # TODO
+            "brand": None  # TODO
+        }
+    return out
