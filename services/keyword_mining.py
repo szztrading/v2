@@ -127,34 +127,30 @@ def attach_bsr_signal(
     kw_table: pd.DataFrame,
     candidate_asins: List[str],
     keepa_client,
-    window: int = 5
+    window: int = 5,
+    domain_name: str | None = None
 ) -> pd.DataFrame:
     """
     对关键词打“BSR 同步信号”标签：
-    简化实现：对候选 ASIN 取最近 window 天 BSR 变化（下降=销量信号），
+    简化实现：对候选 ASIN 取最近 window 段 BSR 变化（下降=销量信号），
     作为整体市场热度 proxy（非严格因果，仅做佐证）。
     """
     deltas = []
     for a in candidate_asins:
         try:
-            series = keepa_client.product_bsr_series(a)
-            if not series: 
+            series = keepa_client.product_bsr_series(a, domain_name=domain_name)
+            if not series:
                 continue
-            # series: list[(ts, bsr)]
             series = sorted(series, key=lambda x: x[0])
             if len(series) < 2:
                 continue
-            # 取最近窗口的起止
             last = series[-1][1]
             prev = series[-min(len(series), window)][1]
             if last and prev:
                 deltas.append(prev - last)  # 正数=BSR下降（排名提升）
         except Exception:
             pass
-    if deltas:
-        avg_delta = sum(deltas)/len(deltas)
-    else:
-        avg_delta = 0.0
+    avg_delta = (sum(deltas)/len(deltas)) if deltas else 0.0
     kw_table["bsr_sync_signal"] = "Neutral" if avg_delta == 0 else ("Positive" if avg_delta > 0 else "Negative")
     kw_table["bsr_avg_delta_sample"] = round(avg_delta, 2)
     return kw_table
