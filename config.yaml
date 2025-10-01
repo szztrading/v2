@@ -33,16 +33,15 @@ keepa:
   timeout: 25
   retries: 2
 
-  keyword_mining:
-  min_df: 2            # 至少出现在多少个竞品上才纳入（去噪）
-  max_top: 200         # 关键词榜单最多返回多少条
-  ngram_range: [1, 3]  # 1~3 gram
-  stopwords: ["for","with","and","the","a","of","to","in","on","set","kit","stainless","steel","304","home","brewing","beer","brewer","brewers","brews"]
-  suggest_probe: false # 如需调用搜索建议探针（可后续接三方），先关
+keyword_mining:
+  min_df: 2                 # 先用2或3，太高会没词，太低会多噪
+  max_top: 200
+  ngram_range: [2, 3]       # 建议先不抓 unigram，噪音少很多
+  stopwords: ["set","kit","stainless","steel","304","home","brewing","beer","brewer","brewers","brews","plastic","glass","rubber","silver","black","white"]
+  suggest_probe: false
   weight:
     title: 1.0
     bullets: 0.7
     aplus: 0.4
-    brand_bonus: 0.0   # 不对品牌词加分（避免偏向品牌）
-  bsr_correlation_window: 5  # 用于 BSR 同步信号的窗口天数
-
+    brand_bonus: 0.0
+  bsr_correlation_window: 5
