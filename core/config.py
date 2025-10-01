@@ -1,7 +1,11 @@
-import os, yaml
+# -*- coding: utf-8 -*-
+import yaml
 from pydantic import BaseModel
 import streamlit as st
 
+# ---------------------------
+# Pydantic models
+# ---------------------------
 class KeepaCfg(BaseModel):
     api_key: str | None = None
     domain_map: dict
@@ -29,7 +33,6 @@ class NegScan(BaseModel):
     brand_whitelist: list[str]
     brand_blacklist: list[str]
 
-# ------- 新增：关键词挖掘配置 -------
 class KeywordMiningWeight(BaseModel):
     title: float = 1.0
     bullets: float = 0.7
@@ -39,7 +42,7 @@ class KeywordMiningWeight(BaseModel):
 class KeywordMiningCfg(BaseModel):
     min_df: int = 2
     max_top: int = 200
-    ngram_range: list[int] = [1, 3]     # [n_min, n_max]
+    ngram_range: list[int] = [1, 3]
     stopwords: list[str] = []
     suggest_probe: bool = False
     weight: KeywordMiningWeight = KeywordMiningWeight()
@@ -52,32 +55,49 @@ class Cfg(BaseModel):
     thresholds: Thresholds
     negatives_scan: NegScan
     keepa: KeepaCfg
-    keyword_mining: KeywordMiningCfg = KeywordMiningCfg()  # 新增字段（含默认）
+    keyword_mining: KeywordMiningCfg = KeywordMiningCfg()
 
-def _read_secrets_key():
-    api = st.secrets.get("KEEPA_API_KEY") if "KEEPA_API_KEY" in st.secrets else None
-    if not api and "keepa" in st.secrets and "api_key" in st.secrets["keepa"]:
-        api = st.secrets["keepa"]["api_key"]
+# ---------------------------
+# Secrets helper
+# ---------------------------
+def _read_secrets_key() -> str | None:
+    # Support both KEEPA_API_KEY and [keepa].api_key
+    api = None
+    try:
+        if "KEEPA_API_KEY" in st.secrets:
+            api = st.secrets.get("KEEPA_API_KEY")
+        elif "keepa" in st.secrets and "api_key" in st.secrets["keepa"]:
+            api = st.secrets["keepa"]["api_key"]
+    except Exception:
+        # st.secrets may not exist in local plain runs; ignore
+        api = None
     return api
 
+# ---------------------------
+# Loader
+# ---------------------------
 def load_config(path: str) -> Cfg:
+    # read yaml
     with open(path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
 
-    # 确保 keepa 节存在 & 注入 API Key
+    # ensure keepa section exists and inject api key
     raw.setdefault("keepa", {})
     raw["keepa"]["api_key"] = _read_secrets_key()
 
-    # 确保 keyword_mining 节存在（即使 YAML 未配置也不报错）
-    raw.setdefault("keyword_mining", {})
-    raw["keyword_mining"].setdefault("ngram_range", [1, 3])
-    raw["keyword_mining"].setdefault("min_df", 2)
-    raw["keyword_mining"].setdefault("max_top", 200)
-    raw["keyword_mining"].setdefault("stopwords", [])
-    raw["keyword_mining"].setdefault("suggest_probe", False)
-    raw["keyword_mining"].setdefault("weight", {
-        "title": 1.0, "bullets": 0.7, "aplus": 0.4, "brand_bonus": 0.0
+    # ensure keyword_mining exists with safe defaults
+    km = raw.setdefault("keyword_mining", {})
+    km.setdefault("min_df", 2)
+    km.setdefault("max_top", 200)
+    km.setdefault("ngram_range", [1, 3])
+    km.setdefault("stopwords", [])
+    km.setdefault("suggest_probe", False)
+    km.setdefault("weight", {
+        "title": 1.0,
+        "bullets": 0.7,
+        "aplus": 0.4,
+        "brand_bonus": 0.0,
     })
-    raw["keyword_mining"].setdefault("bsr_correlation_window", 5)
+    km.setdefault("bsr_correlation_window", 5)
 
     return Cfg(**raw)
