@@ -18,25 +18,37 @@ for to from with without within into onto upon of in on at by over under
 up down out off across through between among along around behind beyond
 again further also only same other another any all some no nor not
 there here above below before after during until against about
-own once once's ever never always sometimes often usually
+own once ever never always sometimes often usually
 """.split())
 
-# domain noise (generic words you likely don't want to rank high)
 DOMAIN_NOISE = set("""
 set kit stainless steel 304 home brewing brewer brewers brews beer
 plastic glass rubber silver black white
 """.split())
 
-# measurement tokens / patterns (5l, 10l, 19l, 500ml, 3/8, 1/4, 5-16, 5/16, 10mm, 23cm, 8oz, 1-pack, 2 pack)
 UNIT_TOKENS = set("l ml cl dl oz floz inch in cm mm m kg g lb lbs pack packs pcs piece pieces pair".split())
 SIZE_PAT = re.compile(r"""
 ^(
-    \d+([./-]\d+)?([./-]\d+)?   # numbers like 5, 5/16, 3-8, 10.5
-    ([a-z]{1,4})?               # optional short unit suffix
+    \d+([./-]\d+)?([./-]\d+)?     # 5, 5/16, 3-8, 10.5
+    ([a-z]{1,4})?                 # unit suffix
   |
-    [a-z]{1,4}\d+               # unit before number e.g. m6
+    [a-z]{1,4}\d+                 # unit prefix e.g. m6
 )$
 """, re.IGNORECASE | re.VERBOSE)
+
+# UI noise blacklist (double-check at n-gram stage and after building the table)
+UI_NOISE_PATTERNS = [
+    r"\bproduct description\b",
+    r"\bbrief content\b",
+    r"\bread (brief|full) content\b",
+    r"\btap to read\b",
+    r"\bdouble tap\b",
+    r"\bcontent visible\b",
+    r"\bvisit the store\b",
+    r"\bread more\b",
+    r"\bsee more\b",
+]
+UI_NOISE_RE = re.compile("|".join(UI_NOISE_PATTERNS), flags=re.I)
 
 def _clean_text(s: str) -> str:
     if not s:
@@ -48,7 +60,6 @@ def _clean_text(s: str) -> str:
 
 def _tokenize(text: str, stop: set) -> List[str]:
     toks = _clean_text(text).split()
-    # keep token if has alpha OR (has digits and not pure punctuation)
     toks = [t for t in toks if len(t) > 1]
     return toks
 
@@ -64,7 +75,6 @@ def _is_unit_token(t: str) -> bool:
         return True
     if SIZE_PAT.match(t):
         return True
-    # patterns like 19l, 500ml, 23cm, 10mm, 8oz, 1/2in
     if re.match(r"^\d+(?:[./-]\d+)?(l|ml|cl|dl|oz|in|cm|mm|m|kg|g|lb|lbs)$", t):
         return True
     if re.match(r"^(in|cm|mm|m)\d+$", t):
@@ -75,41 +85,35 @@ def _ngram_to_text(ng: List[str]) -> str:
     return " ".join(ng)
 
 def _is_noise_ngram(ng: List[str], stop_all: set) -> bool:
-    """
-    Heuristics to drop function words, units, numeric-only phrases, etc.
-    """
     if not ng:
         return True
 
-    # remove unit/size tokens for evaluation
+    text = _ngram_to_text(ng)
+    if UI_NOISE_RE.search(text):
+        return True
+
     core = [t for t in ng if not _is_unit_token(t)]
     if not core:
-        return True  # all size/unit -> noise
+        return True
 
-    # if unigram and a stopword or domain noise -> drop
     if len(core) == 1:
         t = core[0]
         if t in stop_all or t.isdigit() or t in DOMAIN_NOISE:
             return True
 
-    # starts/ends with stopword -> noise
     if core[0] in stop_all or core[-1] in stop_all:
         return True
 
-    # too many stopwords inside
     sw_ratio = sum(1 for t in core if t in stop_all) / float(len(core))
     if sw_ratio >= 0.5:
         return True
 
-    # no alphabetic char overall
     if not re.search(r"[a-z]", _ngram_to_text(core)):
         return True
 
-    # over-short text after trimming
     if len(_ngram_to_text(core)) <= 2:
         return True
 
-    # excessive punctuation-only bigrams
     if any(t in ("--", "-", "+") for t in core):
         return True
 
@@ -145,7 +149,6 @@ def mine_keywords_from_cluster(
         keyword, score, df, tf_weighted, title_hits, bullet_hits, aplus_hits, sample_asins
       debug_rows: list of small dicts for traceability
     """
-    # merge built-in stopwords with user config
     user_sw = set(getattr(cfg, "stopwords", []) or [])
     stop_all = EN_STOPWORDS | user_sw
 
@@ -172,7 +175,6 @@ def mine_keywords_from_cluster(
     aplus_hits: Counter = Counter()
     debug_rows: List[dict] = []
 
-    # iterate samples
     for asin, parts in (texts_by_asin or {}).items():
         title = (parts.get("title") or "").strip()
         bullets = (parts.get("bullets") or "").strip()
@@ -182,7 +184,6 @@ def mine_keywords_from_cluster(
         toks_b = _tokenize(bullets, stop_all)
         toks_a = _tokenize(aplus, stop_all)
 
-        # generate n-grams and filter noise
         grams_t = []
         for g in _ngrams(toks_t, n_min, n_max):
             if not _is_noise_ngram(g, stop_all):
@@ -200,7 +201,6 @@ def mine_keywords_from_cluster(
 
         seen_in_asin = set()
 
-        # title
         for g in set(grams_t):
             key = " ".join(g)
             tf_weighted[key] += w_title
@@ -208,7 +208,6 @@ def mine_keywords_from_cluster(
             per_kw_asins[key].add(asin)
             seen_in_asin.add(key)
 
-        # bullets
         for g in set(grams_b):
             key = " ".join(g)
             tf_weighted[key] += w_bul
@@ -216,7 +215,6 @@ def mine_keywords_from_cluster(
             per_kw_asins[key].add(asin)
             seen_in_asin.add(key)
 
-        # aplus
         for g in set(grams_a):
             key = " ".join(g)
             tf_weighted[key] += w_apl
@@ -239,10 +237,9 @@ def mine_keywords_from_cluster(
         for kw, dfv in df_count.items():
             if dfv < min_df_value:
                 continue
-            score = tf_weighted[kw] * (1.0 + math.log1p(dfv))
             rows.append({
                 "keyword": kw,
-                "score": round(float(score), 4),
+                "score": round(float(tf_weighted[kw] * (1.0 + math.log1p(dfv))), 4),
                 "df": int(dfv),
                 "tf_weighted": round(float(tf_weighted[kw]), 4),
                 "title_hits": int(title_hits[kw]),
@@ -253,6 +250,12 @@ def mine_keywords_from_cluster(
         if not rows:
             return _empty_kw_df()
         df = pd.DataFrame(rows)
+        # First-pass UI noise filter on the table
+        df = df[~df["keyword"].str.contains(UI_NOISE_RE, case=False, na=False)]
+        # If a phrase appears only in A+ and never in title/bullets, consider dropping
+        if {"title_hits", "bullet_hits", "aplus_hits"}.issubset(df.columns):
+            mask_ui_like = (df["title_hits"] == 0) & (df["bullet_hits"] == 0) & (df["aplus_hits"] > 0)
+            df = df[~mask_ui_like]
         sort_cols = [c for c in ["score", "df", "tf_weighted"] if c in df.columns]
         if sort_cols:
             df = df.sort_values(sort_cols, ascending=[False] * len(sort_cols))
@@ -262,10 +265,8 @@ def mine_keywords_from_cluster(
         return df
 
     kw_table = _build_df(min_df_cfg)
-
     if kw_table.empty and len(df_count) > 0 and min_df_cfg > 1:
         kw_table = _build_df(1)
-
     if kw_table.empty and len(df_count) == 0:
         kw_table = _empty_kw_df()
 
@@ -293,7 +294,7 @@ def attach_bsr_signal(
             last = series[-1][1]
             prev = series[-min(len(series), window)][1]
             if last and prev:
-                deltas.append(prev - last)  # positive => BSR down (rank improved)
+                deltas.append(prev - last)
         except Exception:
             pass
 
