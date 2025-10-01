@@ -29,6 +29,20 @@ def _ngrams(tokens: List[str], n_min: int, n_max: int) -> List[str]:
             res.append(" ".join(tokens[i:i + n]))
     return res
 
+def _empty_kw_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "keyword",
+            "score",
+            "df",
+            "tf_weighted",
+            "title_hits",
+            "bullet_hits",
+            "aplus_hits",
+            "sample_asins",
+        ]
+    )
+
 # ---------------------------
 # Main keyword mining
 # ---------------------------
@@ -60,7 +74,7 @@ def mine_keywords_from_cluster(
     n_min = int(ngram_range[0]) if len(ngram_range) > 0 else 1
     n_max = int(ngram_range[1]) if len(ngram_range) > 1 else 3
 
-    min_df = int(getattr(cfg, "min_df", 2))
+    min_df_cfg = int(getattr(cfg, "min_df", 2))
     max_top = int(getattr(cfg, "max_top", 200))
 
     df_count: Counter = Counter()
@@ -71,7 +85,8 @@ def mine_keywords_from_cluster(
     aplus_hits: Counter = Counter()
     debug_rows: List[dict] = []
 
-    for asin, parts in texts_by_asin.items():
+    # build stats
+    for asin, parts in (texts_by_asin or {}).items():
         title = (parts.get("title") or "").strip()
         bullets = (parts.get("bullets") or "").strip()
         aplus = (parts.get("aplus") or "").strip()
@@ -117,28 +132,45 @@ def mine_keywords_from_cluster(
             "aplus": aplus[:200],
         })
 
-    rows: List[dict] = []
-    for kw, dfv in df_count.items():
-        if dfv < min_df:
-            continue
-        score = tf_weighted[kw] * (1.0 + math.log1p(dfv))
-        rows.append({
-            "keyword": kw,
-            "score": round(score, 4),
-            "df": int(dfv),
-            "tf_weighted": round(float(tf_weighted[kw]), 4),
-            "title_hits": int(title_hits[kw]),
-            "bullet_hits": int(bullet_hits[kw]),
-            "aplus_hits": int(aplus_hits[kw]),
-            "sample_asins": ",".join(list(per_kw_asins[kw])[:8]),
-        })
+    # helper to build dataframe from current counters with a given min_df
+    def _build_df(min_df_value: int) -> pd.DataFrame:
+        rows: List[dict] = []
+        for kw, dfv in df_count.items():
+            if dfv < min_df_value:
+                continue
+            score = tf_weighted[kw] * (1.0 + math.log1p(dfv))
+            rows.append({
+                "keyword": kw,
+                "score": round(float(score), 4),
+                "df": int(dfv),
+                "tf_weighted": round(float(tf_weighted[kw]), 4),
+                "title_hits": int(title_hits[kw]),
+                "bullet_hits": int(bullet_hits[kw]),
+                "aplus_hits": int(aplus_hits[kw]),
+                "sample_asins": ",".join(list(per_kw_asins[kw])[:8]),
+            })
+        if not rows:
+            return _empty_kw_df()
+        df = pd.DataFrame(rows)
+        # safe sort: only sort by columns that exist in df
+        sort_cols = [c for c in ["score", "df", "tf_weighted"] if c in df.columns]
+        if sort_cols:
+            df = df.sort_values(sort_cols, ascending=[False] * len(sort_cols))
+        df = df.reset_index(drop=True)
+        if len(df) > max_top:
+            df = df.head(max_top).copy()
+        return df
 
-    kw_table = pd.DataFrame(rows).sort_values(
-        ["score", "df", "tf_weighted"], ascending=[False, False, False]
-    ).reset_index(drop=True)
+    # first attempt with configured min_df
+    kw_table = _build_df(min_df_cfg)
 
-    if len(kw_table) > max_top:
-        kw_table = kw_table.head(max_top).copy()
+    # fallback: if empty but we actually have any grams counted, retry with min_df = 1
+    if kw_table.empty and len(df_count) > 0 and min_df_cfg > 1:
+        kw_table = _build_df(1)
+
+    # final fallback: ensure structure even if completely empty (no grams)
+    if kw_table.empty and len(df_count) == 0:
+        kw_table = _empty_kw_df()
 
     return kw_table, debug_rows
 
@@ -180,6 +212,7 @@ def attach_bsr_signal(
     elif avg_delta < 0:
         label = "Negative"
 
+    kw_table = kw_table.copy()
     kw_table["bsr_sync_signal"] = label
     kw_table["bsr_avg_delta_sample"] = round(avg_delta, 2)
     return kw_table
