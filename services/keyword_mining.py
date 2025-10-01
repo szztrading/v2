@@ -6,28 +6,114 @@ from typing import Dict, List, Tuple
 import pandas as pd
 
 # ---------------------------
-# Text cleaning and tokenizing
+# Built-in stopwords and noise filters
 # ---------------------------
+EN_STOPWORDS = set("""
+a an the and or but if while as than then so very more most such each per
+i you he she it we they me him her us them my your his her its our their
+this that these those who whom whose which what where when why how
+be am is are was were being been do does did doing have has had having
+can could may might must shall should will would
+for to from with without within into onto upon of in on at by over under
+up down out off across through between among along around behind beyond
+again further also only same other another any all some no nor not
+there here above below before after during until against about
+own once once's ever never always sometimes often usually
+""".split())
+
+# domain noise (generic words you likely don't want to rank high)
+DOMAIN_NOISE = set("""
+set kit stainless steel 304 home brewing brewer brewers brews beer
+plastic glass rubber silver black white
+""".split())
+
+# measurement tokens / patterns (5l, 10l, 19l, 500ml, 3/8, 1/4, 5-16, 5/16, 10mm, 23cm, 8oz, 1-pack, 2 pack)
+UNIT_TOKENS = set("l ml cl dl oz floz inch in cm mm m kg g lb lbs pack packs pcs piece pieces pair".split())
+SIZE_PAT = re.compile(r"""
+^(
+    \d+([./-]\d+)?([./-]\d+)?   # numbers like 5, 5/16, 3-8, 10.5
+    ([a-z]{1,4})?               # optional short unit suffix
+  |
+    [a-z]{1,4}\d+               # unit before number e.g. m6
+)$
+""", re.IGNORECASE | re.VERBOSE)
+
 def _clean_text(s: str) -> str:
     if not s:
         return ""
     s = s.lower()
-    # keep letters, digits, spaces, and a few separators
     s = re.sub(r"[^a-z0-9\s\-\+./]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
 def _tokenize(text: str, stop: set) -> List[str]:
     toks = _clean_text(text).split()
-    toks = [t for t in toks if t not in stop and len(t) > 1]
+    # keep token if has alpha OR (has digits and not pure punctuation)
+    toks = [t for t in toks if len(t) > 1]
     return toks
 
-def _ngrams(tokens: List[str], n_min: int, n_max: int) -> List[str]:
-    res: List[str] = []
+def _ngrams(tokens: List[str], n_min: int, n_max: int) -> List[List[str]]:
+    res: List[List[str]] = []
     for n in range(n_min, n_max + 1):
         for i in range(0, len(tokens) - n + 1):
-            res.append(" ".join(tokens[i:i + n]))
+            res.append(tokens[i:i + n])
     return res
+
+def _is_unit_token(t: str) -> bool:
+    if t in UNIT_TOKENS:
+        return True
+    if SIZE_PAT.match(t):
+        return True
+    # patterns like 19l, 500ml, 23cm, 10mm, 8oz, 1/2in
+    if re.match(r"^\d+(?:[./-]\d+)?(l|ml|cl|dl|oz|in|cm|mm|m|kg|g|lb|lbs)$", t):
+        return True
+    if re.match(r"^(in|cm|mm|m)\d+$", t):
+        return True
+    return False
+
+def _ngram_to_text(ng: List[str]) -> str:
+    return " ".join(ng)
+
+def _is_noise_ngram(ng: List[str], stop_all: set) -> bool:
+    """
+    Heuristics to drop function words, units, numeric-only phrases, etc.
+    """
+    if not ng:
+        return True
+
+    # remove unit/size tokens for evaluation
+    core = [t for t in ng if not _is_unit_token(t)]
+    if not core:
+        return True  # all size/unit -> noise
+
+    # if unigram and a stopword or domain noise -> drop
+    if len(core) == 1:
+        t = core[0]
+        if t in stop_all or t.isdigit() or t in DOMAIN_NOISE:
+            return True
+
+    # starts/ends with stopword -> noise
+    if core[0] in stop_all or core[-1] in stop_all:
+        return True
+
+    # too many stopwords inside
+    sw_ratio = sum(1 for t in core if t in stop_all) / float(len(core))
+    if sw_ratio >= 0.5:
+        return True
+
+    # no alphabetic char overall
+    if not re.search(r"[a-z]", _ngram_to_text(core)):
+        return True
+
+    # over-short text after trimming
+    if len(_ngram_to_text(core)) <= 2:
+        return True
+
+    # excessive punctuation-only bigrams
+    if any(t in ("--", "-", "+") for t in core):
+        return True
+
+    return False
 
 def _empty_kw_df() -> pd.DataFrame:
     return pd.DataFrame(
@@ -59,11 +145,12 @@ def mine_keywords_from_cluster(
         keyword, score, df, tf_weighted, title_hits, bullet_hits, aplus_hits, sample_asins
       debug_rows: list of small dicts for traceability
     """
-    stop = set(getattr(cfg, "stopwords", []) or [])
+    # merge built-in stopwords with user config
+    user_sw = set(getattr(cfg, "stopwords", []) or [])
+    stop_all = EN_STOPWORDS | user_sw
 
     weight = getattr(cfg, "weight", None)
     if weight is None:
-        # safety defaults
         w_title, w_bul, w_apl = 1.0, 0.7, 0.4
     else:
         w_title = float(getattr(weight, "title", 1.0))
@@ -85,45 +172,60 @@ def mine_keywords_from_cluster(
     aplus_hits: Counter = Counter()
     debug_rows: List[dict] = []
 
-    # build stats
+    # iterate samples
     for asin, parts in (texts_by_asin or {}).items():
         title = (parts.get("title") or "").strip()
         bullets = (parts.get("bullets") or "").strip()
         aplus = (parts.get("aplus") or "").strip()
 
-        toks_t = _tokenize(title, stop)
-        toks_b = _tokenize(bullets, stop)
-        toks_a = _tokenize(aplus, stop)
+        toks_t = _tokenize(title, stop_all)
+        toks_b = _tokenize(bullets, stop_all)
+        toks_a = _tokenize(aplus, stop_all)
 
-        grams_t = set(_ngrams(toks_t, n_min, n_max))
-        grams_b = set(_ngrams(toks_b, n_min, n_max))
-        grams_a = set(_ngrams(toks_a, n_min, n_max))
+        # generate n-grams and filter noise
+        grams_t = []
+        for g in _ngrams(toks_t, n_min, n_max):
+            if not _is_noise_ngram(g, stop_all):
+                grams_t.append(tuple(g))
+
+        grams_b = []
+        for g in _ngrams(toks_b, n_min, n_max):
+            if not _is_noise_ngram(g, stop_all):
+                grams_b.append(tuple(g))
+
+        grams_a = []
+        for g in _ngrams(toks_a, n_min, n_max):
+            if not _is_noise_ngram(g, stop_all):
+                grams_a.append(tuple(g))
 
         seen_in_asin = set()
 
         # title
-        for g in grams_t:
-            tf_weighted[g] += w_title
-            title_hits[g] += 1
-            per_kw_asins[g].add(asin)
-            seen_in_asin.add(g)
+        for g in set(grams_t):
+            key = " ".join(g)
+            tf_weighted[key] += w_title
+            title_hits[key] += 1
+            per_kw_asins[key].add(asin)
+            seen_in_asin.add(key)
 
         # bullets
-        for g in grams_b:
-            tf_weighted[g] += w_bul
-            bullet_hits[g] += 1
-            per_kw_asins[g].add(asin)
-            seen_in_asin.add(g)
+        for g in set(grams_b):
+            key = " ".join(g)
+            tf_weighted[key] += w_bul
+            bullet_hits[key] += 1
+            per_kw_asins[key].add(asin)
+            seen_in_asin.add(key)
 
         # aplus
-        for g in grams_a:
-            tf_weighted[g] += w_apl
-            aplus_hits[g] += 1
-            per_kw_asins[g].add(asin)
-            seen_in_asin.add(g)
+        for g in set(grams_a):
+            key = " ".join(g)
+            tf_weighted[key] += w_apl
+            aplus_hits[key] += 1
+            per_kw_asins[key].add(asin)
+            seen_in_asin.add(key)
 
-        for g in seen_in_asin:
-            df_count[g] += 1
+        for key in seen_in_asin:
+            df_count[key] += 1
 
         debug_rows.append({
             "asin": asin,
@@ -132,7 +234,6 @@ def mine_keywords_from_cluster(
             "aplus": aplus[:200],
         })
 
-    # helper to build dataframe from current counters with a given min_df
     def _build_df(min_df_value: int) -> pd.DataFrame:
         rows: List[dict] = []
         for kw, dfv in df_count.items():
@@ -152,7 +253,6 @@ def mine_keywords_from_cluster(
         if not rows:
             return _empty_kw_df()
         df = pd.DataFrame(rows)
-        # safe sort: only sort by columns that exist in df
         sort_cols = [c for c in ["score", "df", "tf_weighted"] if c in df.columns]
         if sort_cols:
             df = df.sort_values(sort_cols, ascending=[False] * len(sort_cols))
@@ -161,14 +261,11 @@ def mine_keywords_from_cluster(
             df = df.head(max_top).copy()
         return df
 
-    # first attempt with configured min_df
     kw_table = _build_df(min_df_cfg)
 
-    # fallback: if empty but we actually have any grams counted, retry with min_df = 1
     if kw_table.empty and len(df_count) > 0 and min_df_cfg > 1:
         kw_table = _build_df(1)
 
-    # final fallback: ensure structure even if completely empty (no grams)
     if kw_table.empty and len(df_count) == 0:
         kw_table = _empty_kw_df()
 
@@ -184,10 +281,6 @@ def attach_bsr_signal(
     window: int = 5,
     domain_name: str | None = None
 ) -> pd.DataFrame:
-    """
-    Compute a coarse BSR sync proxy from candidate_asins using Keepa BSR series.
-    This is not a causal metric; it is a lightweight market heat proxy.
-    """
     deltas: List[float] = []
     for a in candidate_asins:
         try:
@@ -202,7 +295,6 @@ def attach_bsr_signal(
             if last and prev:
                 deltas.append(prev - last)  # positive => BSR down (rank improved)
         except Exception:
-            # ignore errors per asin
             pass
 
     avg_delta = (sum(deltas) / len(deltas)) if deltas else 0.0
